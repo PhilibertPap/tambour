@@ -1,0 +1,5 @@
+debut: T0=0.000000e+00 Pa, T0/mu=0.000000e+00, lambda_R=1.00000000, lambda_Z=1.00000000, J1-1=0.000e+00
+milieu: T0=7.425000e-01 Pa, T0/mu=7.425000e-01, lambda_R=1.07535988, lambda_Z=0.86934445, J1-1=5.309e-03
+fin: T0=1.500000e+00 Pa, T0/mu=1.500000e+00, lambda_R=1.18818631, lambda_Z=0.71668907, J1-1=1.181e-02
+pente initiale approx: d(lambda_R)/dT0=8.609649e-02 Pa^-1, d(lambda_Z)/dT0=-1.648793e-01 Pa^-1
+max |J1-1| = 1.181210e-02

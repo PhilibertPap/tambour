@@ -10,7 +10,7 @@ import numpy as np
 # ==========================================================
 
 # Maillage / tags (les scripts dans fem/mesh utilisent ces tags)
-MESH_FILE = "fem/mesh/cercle.msh"
+MESH_FILE = "fem/mesh/cercle/cercle.msh"
 TAG_LATERAL = 10   # Gamma_lat
 TAG_FIX_FACE = 12  # utilise seulement si GAUGE_MODE == "face"
 
@@ -28,17 +28,17 @@ RHO0 = 1400.0        # kg/m^3
 
 # Chargement
 T0_TARGET = 1.0e6    # Pa (traction nominale sur Gamma_lat)
-N_LOAD_STEPS = 50    # continuation simple (plus grand = plus robuste)
+N_LOAD_STEPS = 50    # continuation simple
 
 # Discretisation / solveurs
 FE_DEGREE = 2
 NEWTON_ATOL = 1e-8
-NEWTON_RTOL = 5e-4   # tolerance relative par pas de charge (plus robuste)
+NEWTON_RTOL = 5e-4   # tolerance relative par pas de charge
 NEWTON_MAX_IT = 40
 N_MODES = 10
 EIG_TARGET = 0.0
 
-# Exports (dans fem/results)
+# Exports
 WRITE_CSV = True
 WRITE_VTK = True
 RESULTS_BASENAME = None  # ex: "cercle_T1e6"; None => derive du nom de maillage
@@ -135,8 +135,6 @@ def main():
 
     R_form = ufl.inner(P1, ufl.grad(v)) * ufl.dx - ufl.inner(traction, v) * ds(TAG_LATERAL)
     J_form = ufl.derivative(R_form, u1, du)
-    R_compiled = fem.form(R_form)
-    J_compiled = fem.form(J_form)
 
     # CL de jauge / fixation numerique
     bcs = []
@@ -222,28 +220,26 @@ def main():
         raise ValueError("GAUGE_MODE doit etre 'minimal' ou 'face'.")
 
     # ------------------------------------------------------
-    # Newton manuel (robuste entre versions dolfinx)
+    # Solveur quasi-statique non lineaire (SNES/PETSc)
+    # style notebook: definir F, J, puis resoudre a chaque pas de charge
     # ------------------------------------------------------
-    x_petsc = getattr(u1.x, "petsc_vec", None)
-    if x_petsc is None:
-        x_petsc = getattr(u1, "vector", None)
-    if x_petsc is None:
-        raise RuntimeError("Vecteur PETSc de u1 inaccessible.")
-
-    ksp = PETSc.KSP().create(domain.comm)
-    ksp.setType("preonly")
-    ksp.getPC().setType("lu")
-    ksp.setFromOptions()
-
-    def assemble_residual():
-        b = fem_petsc.assemble_vector(R_compiled)
-        if bcs:
-            fem_petsc.apply_lifting(b, [J_compiled], bcs=[bcs], x0=[x_petsc], alpha=-1.0)
-            b.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
-            fem_petsc.set_bc(b, bcs, x_petsc, -1.0)
-        else:
-            b.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
-        return b
+    problem = fem_petsc.NonlinearProblem(
+        R_form,
+        u1,
+        bcs=bcs,
+        J=J_form,
+        petsc_options_prefix="prestress_",
+        petsc_options={
+            "snes_type": "newtonls",
+            "snes_linesearch_type": "bt",
+            "snes_max_it": int(NEWTON_MAX_IT),
+            "snes_atol": float(NEWTON_ATOL),
+            "snes_rtol": float(NEWTON_RTOL),
+            "snes_stol": 1e-14,
+            "ksp_type": "preonly",
+            "pc_type": "lu",
+        },
+    )
 
     if domain.comm.rank == 0:
         print("=== Parametres ===")
@@ -265,97 +261,14 @@ def main():
         T0.value = PETSc.ScalarType(Tload)
         if domain.comm.rank == 0:
             print(f"\n-- Load step {i_load}/{len(load_values)} : T = {Tload:.6e} Pa")
-
-        converged = False
-        res0 = None
-        for k_newton in range(int(NEWTON_MAX_IT)):
-            b = assemble_residual()
-            res = float(b.norm())
-            if res0 is None:
-                res0 = max(res, 1e-30)
-            rel = res / res0
-            if domain.comm.rank == 0:
-                print(f"Newton iter {k_newton:02d}: ||R|| = {res:.6e} (rel={rel:.3e})")
-
-            if (res <= NEWTON_ATOL) or (rel <= NEWTON_RTOL):
-                converged = True
-                b.destroy()
-                break
-
-            A = fem_petsc.assemble_matrix(J_compiled, bcs=bcs)
-            A.assemble()
-
-            dx = b.duplicate()
-            dx.set(0.0)
-            b.scale(-1.0)
-            ksp.setOperators(A)
-            ksp.solve(b, dx)
-
-            x_old = x_petsc.duplicate()
-            x_old.copy(x_petsc)
-
-            alpha = 1.0
-            accepted = False
-            best_alpha = 1.0
-            best_res = None
-            for _ in range(12):
-                x_petsc.copy(x_old)
-                x_petsc.axpy(alpha, dx)
-                x_petsc.ghostUpdate(addv=PETSc.InsertMode.INSERT, mode=PETSc.ScatterMode.FORWARD)
-
-                b_trial = assemble_residual()
-                r_trial = float(b_trial.norm())
-                b_trial.destroy()
-
-                if best_res is None or r_trial < best_res:
-                    best_res = r_trial
-                    best_alpha = alpha
-
-                # version simple (style TD): accepter toute baisse
-                if r_trial < res:
-                    accepted = True
-                    break
-                alpha *= 0.5
-
-            # fallback: si le meilleur essai ne degrade presque pas, on accepte
-            if (not accepted) and (best_res is not None) and (best_res <= 1.05 * res):
-                x_petsc.copy(x_old)
-                x_petsc.axpy(best_alpha, dx)
-                x_petsc.ghostUpdate(addv=PETSc.InsertMode.INSERT, mode=PETSc.ScatterMode.FORWARD)
-                accepted = True
-
-            # Si la line search echoue mais qu'on est deja tres proche, on s'arrete.
-            # (Evite de repartir loin de la solution en acceptant un mauvais pas.)
-            if (not accepted) and ((res <= 10.0 * NEWTON_ATOL) or (rel <= 2.0 * NEWTON_RTOL)):
-                converged = True
-                if domain.comm.rank == 0:
-                    print("  warning: line search echoue pres de la convergence -> on accepte la convergence.")
-                x_petsc.copy(x_old)
-                x_petsc.ghostUpdate(addv=PETSc.InsertMode.INSERT, mode=PETSc.ScatterMode.FORWARD)
-
-            step_norm = float(dx.norm())
-
-            x_old.destroy()
-            dx.destroy()
-            A.destroy()
-            b.destroy()
-
-            if (not accepted) and (not converged):
-                # Si le residu est deja faible relativement, on accepte et on sort
-                if rel <= max(5.0 * NEWTON_RTOL, 1e-4):
-                    converged = True
-                    break
-                raise RuntimeError(f"Line search echoue (load step {i_load}, iter {k_newton}).")
-
-            if converged:
-                break
-
-            if step_norm < 1e-14:
-                converged = True
-                break
-
-        if not converged:
-            raise RuntimeError(f"Prechargement non convergent au load step {i_load}/{len(load_values)}")
+        problem.solve()
+        reason = problem.solver.getConvergedReason()
+        its = problem.solver.getIterationNumber()
+        u1.x.scatter_forward()
+        if domain.comm.rank == 0:
+            print(f"SNES iters = {its}, reason = {reason}")
+        if reason <= 0:
+            raise RuntimeError(f"SNES non convergent au load step {i_load}/{len(load_values)} (reason={reason}).")
 
     u1.x.scatter_forward()
 
@@ -420,13 +333,16 @@ def main():
             print(f"mode {i:02d}: omega^2={lam:.6e}, omega={omega:.6e} rad/s, f={omega/(2*np.pi):.6f} Hz")
 
     # ------------------------------------------------------
-    # Exports (fem/results)
+    # Exports (dans fem/results/<cas>/)
     # ------------------------------------------------------
-    results_dir = Path("fem/results")
+    mesh_path = Path(MESH_FILE)
+    case_name = mesh_path.parent.name if mesh_path.parent.name != "mesh" else mesh_path.stem
+    results_dir = Path("fem/results") / case_name
     results_dir.mkdir(parents=True, exist_ok=True)
-    stem = RESULTS_BASENAME if RESULTS_BASENAME else Path(MESH_FILE).stem
+    stem = RESULTS_BASENAME if RESULTS_BASENAME else mesh_path.stem
     csv_path = results_dir / f"{stem}_modes.csv"
-    vtk_path = results_dir / f"{stem}_modes.pvd"
+    vtk_prestress_path = results_dir / f"{stem}_prestress.pvd"
+    vtk_modes_path = results_dir / f"{stem}_modes.pvd"
 
     if WRITE_CSV:
         with csv_path.open("w", newline="") as f:
@@ -446,16 +362,22 @@ def main():
         u_out.x.array[:] = u1.x.array
         u_out.x.scatter_forward()
 
-        with io.VTKFile(domain.comm, str(vtk_path), "w") as vtk:
+        # 1) Prechargement seul (plus simple a visualiser)
+        with io.VTKFile(domain.comm, str(vtk_prestress_path), "w") as vtk:
             vtk.write_mesh(domain)
             vtk.write_function(u_out, 0.0)
+
+        # 2) Modes seuls, ecrits comme serie temporelle (un mode par "temps")
+        with io.VTKFile(domain.comm, str(vtk_modes_path), "w") as vtk:
+            vtk.write_mesh(domain)
             for i, (lam, vec) in enumerate(eigpairs, start=1):
                 mode_fun.x.array[:] = vec
                 mode_fun.x.scatter_forward()
-                mode_fun.name = f"mode_{i}"
-                vtk.write_function(mode_fun, float(lam))
+                mode_fun.name = "mode"  # meme nom de champ, indexe par le temps
+                vtk.write_function(mode_fun, float(i))
         if domain.comm.rank == 0:
-            print("VTK exporte:", vtk_path)
+            print("VTK prechargement exporte:", vtk_prestress_path)
+            print("VTK modes exporte:", vtk_modes_path)
 
 
 if __name__ == "__main__":

@@ -3,3 +3,8 @@ __pycache__/
 .venv/
 .env
 .ipynb_checkpoints/
+fem/results/
+fem/mesh/*/results/
+fem/mesh/*/*.pvd
+fem/mesh/*/*.pvtu
+fem/mesh/*/*_p0_*.vtu

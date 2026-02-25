@@ -12,7 +12,7 @@ RX = 0.18
 RY = 0.12
 THICKNESS = 1e-4
 LC = 0.015
-OUT_FILE = "fem/mesh/ellipse.msh"
+OUT_FILE = "fem/mesh/ellipse/ellipse.msh"
 
 # Tags physiques (utilises par fem/main.py)
 VOLUME_TAG = 1

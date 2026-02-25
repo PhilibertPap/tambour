@@ -26,9 +26,13 @@ E = 3.5e9            # Pa (ignore si USE_PRESET=True)
 NU = 0.38            # -
 RHO0 = 1400.0        # kg/m^3
 
-# Chargement
-T0_TARGET = 1.0e6    # Pa (traction nominale sur Gamma_lat)
-N_LOAD_STEPS = 50    # continuation simple
+# Precontrainte
+# "imposed_radial_displacement" (recommande pour un tambour serre)
+# "traction" (cas d'etude)
+PRESTRESS_MODE = "imposed_radial_displacement"
+T0_TARGET = 1.0e6                    # Pa (si PRESTRESS_MODE == "traction")
+EDGE_RADIAL_DISPLACEMENT_TARGET = 2e-4  # m (si PRESTRESS_MODE == "imposed_radial_displacement")
+N_LOAD_STEPS = 10                    # continuation simple
 
 # Discretisation / solveurs
 FE_DEGREE = 2
@@ -42,6 +46,8 @@ EIG_TARGET = 0.0
 WRITE_CSV = True
 WRITE_VTK = True
 RESULTS_BASENAME = None  # ex: "cercle_T1e6"; None => derive du nom de maillage
+NORMALIZE_MODES_FOR_VTK = True  # rend les modes visibles dans ParaView
+VTK_MODE_SCALE = 1.0            # facteur supplementaire (ex: 10.0)
 
 
 # ==========================================================
@@ -133,12 +139,51 @@ def main():
     T0 = fem.Constant(domain, PETSc.ScalarType(0.0))
     traction = T0 * N
 
-    R_form = ufl.inner(P1, ufl.grad(v)) * ufl.dx - ufl.inner(traction, v) * ds(TAG_LATERAL)
+    if PRESTRESS_MODE == "traction":
+        R_form = ufl.inner(P1, ufl.grad(v)) * ufl.dx - ufl.inner(traction, v) * ds(TAG_LATERAL)
+    elif PRESTRESS_MODE == "imposed_radial_displacement":
+        R_form = ufl.inner(P1, ufl.grad(v)) * ufl.dx
+    else:
+        raise ValueError("PRESTRESS_MODE doit etre 'traction' ou 'imposed_radial_displacement'.")
     J_form = ufl.derivative(R_form, u1, du)
 
-    # CL de jauge / fixation numerique
-    bcs = []
-    if GAUGE_MODE == "face":
+    # CL de prechargement + CL des vibrations
+    # - prechargement:
+    #     * "imposed_radial_displacement" -> serrage cinematique sur Gamma_lat
+    #     * "traction" -> traction sur Gamma_lat + jauge minimale/face
+    # - vibrations:
+    #     * bord lateral bloque (tambour serre)
+    bcs_prestress = []
+    if PRESTRESS_MODE == "imposed_radial_displacement":
+        fdim = domain.topology.dim - 1
+        facets_lat = facet_tags.find(int(TAG_LATERAL))
+        if facets_lat is None or len(facets_lat) == 0:
+            raise ValueError(f"Tag lateral introuvable: TAG_LATERAL={TAG_LATERAL}")
+        dofs_lat = fem.locate_dofs_topological(V, fdim, facets_lat)
+
+        u_lat = fem.Function(V, name="u_lateral_bc")
+
+        def update_lateral_bc(amplitude):
+            # Serrage simple "TD": deplacement radial dans le plan (x,y), uz=0 sur le bord
+            amp = float(amplitude)
+
+            def expr(x):
+                values = np.zeros((3, x.shape[1]), dtype=np.float64)
+                values[0, :] = amp * x[0, :]
+                values[1, :] = amp * x[1, :]
+                values[2, :] = 0.0
+                return values
+
+            u_lat.interpolate(expr)
+            u_lat.x.scatter_forward()
+
+        update_lateral_bc(0.0)
+        try:
+            bcs_prestress = [fem.dirichletbc(u_lat, dofs_lat)]
+        except TypeError:
+            bcs_prestress = [fem.dirichletbc(u_lat, dofs_lat, V)]
+
+    elif GAUGE_MODE == "face":
         fdim = domain.topology.dim - 1
         facets_fix = facet_tags.find(int(TAG_FIX_FACE))
         if facets_fix is None or len(facets_fix) == 0:
@@ -152,9 +197,9 @@ def main():
         u_fix = fem.Function(V)
         u_fix.x.array[:] = 0.0
         try:
-            bcs = [fem.dirichletbc(u_fix, dofs_fix)]
+            bcs_prestress = [fem.dirichletbc(u_fix, dofs_fix)]
         except TypeError:
-            bcs = [fem.dirichletbc(u_fix, dofs_fix, V)]
+            bcs_prestress = [fem.dirichletbc(u_fix, dofs_fix, V)]
 
     elif GAUGE_MODE == "minimal":
         # Jauge minimale "TD" pour enlever les 6 mouvements rigides sans bloquer une face complete:
@@ -208,7 +253,7 @@ def main():
                 uc.x.array[:] = 0.0
                 return fem.dirichletbc(uc, dofs, Vsub)
 
-        bcs = [
+        bcs_prestress = [
             bc_scalar_zero_on_point(0, A_pt),
             bc_scalar_zero_on_point(1, A_pt),
             bc_scalar_zero_on_point(2, A_pt),
@@ -219,6 +264,19 @@ def main():
     else:
         raise ValueError("GAUGE_MODE doit etre 'minimal' ou 'face'.")
 
+    # Vibrations: bord lateral bloque (perturbation nulle)
+    fdim = domain.topology.dim - 1
+    facets_lat = facet_tags.find(int(TAG_LATERAL))
+    if facets_lat is None or len(facets_lat) == 0:
+        raise ValueError(f"Tag lateral introuvable: TAG_LATERAL={TAG_LATERAL}")
+    dofs_lat_modes = fem.locate_dofs_topological(V, fdim, facets_lat)
+    u_zero_mode = fem.Function(V)
+    u_zero_mode.x.array[:] = 0.0
+    try:
+        bcs_modes = [fem.dirichletbc(u_zero_mode, dofs_lat_modes)]
+    except TypeError:
+        bcs_modes = [fem.dirichletbc(u_zero_mode, dofs_lat_modes, V)]
+
     # ------------------------------------------------------
     # Solveur quasi-statique non lineaire (SNES/PETSc)
     # style notebook: definir F, J, puis resoudre a chaque pas de charge
@@ -226,7 +284,7 @@ def main():
     problem = fem_petsc.NonlinearProblem(
         R_form,
         u1,
-        bcs=bcs,
+        bcs=bcs_prestress,
         J=J_form,
         petsc_options_prefix="prestress_",
         petsc_options={
@@ -247,20 +305,33 @@ def main():
         print("TAG_LATERAL =", TAG_LATERAL)
         print("GAUGE_MODE =", GAUGE_MODE)
         print("TAG_FIX_FACE =", TAG_FIX_FACE)
+        print("PRESTRESS_MODE =", PRESTRESS_MODE)
         print("E =", E_val, "Pa")
         print("nu =", nu_val)
         print("rho0 =", rho0_val, "kg/m^3")
         print("mu =", mu, "Pa")
         print("kappa =", kappa, "Pa")
         print("T0_TARGET =", T0_TARGET, "Pa")
+        print("EDGE_RADIAL_DISPLACEMENT_TARGET =", EDGE_RADIAL_DISPLACEMENT_TARGET, "m")
         print("N_LOAD_STEPS =", N_LOAD_STEPS)
         print("Jauge minimale recommandee pour ne presque pas alterer la physique du tambour.")
+        print("NORMALIZE_MODES_FOR_VTK =", NORMALIZE_MODES_FOR_VTK)
 
-    load_values = np.linspace(0.0, float(T0_TARGET), max(1, int(N_LOAD_STEPS)) + 1)[1:]
-    for i_load, Tload in enumerate(load_values, start=1):
-        T0.value = PETSc.ScalarType(Tload)
+    if PRESTRESS_MODE == "traction":
+        load_values = np.linspace(0.0, float(T0_TARGET), max(1, int(N_LOAD_STEPS)) + 1)[1:]
+    else:
+        load_values = np.linspace(0.0, float(EDGE_RADIAL_DISPLACEMENT_TARGET), max(1, int(N_LOAD_STEPS)) + 1)[1:]
+
+    for i_load, load_val in enumerate(load_values, start=1):
+        if PRESTRESS_MODE == "traction":
+            T0.value = PETSc.ScalarType(load_val)
+        else:
+            update_lateral_bc(float(load_val))
         if domain.comm.rank == 0:
-            print(f"\n-- Load step {i_load}/{len(load_values)} : T = {Tload:.6e} Pa")
+            if PRESTRESS_MODE == "traction":
+                print(f"\n-- Load step {i_load}/{len(load_values)} : T = {load_val:.6e} Pa")
+            else:
+                print(f"\n-- Load step {i_load}/{len(load_values)} : u_edge = {load_val:.6e} m")
         problem.solve()
         reason = problem.solver.getConvergedReason()
         its = problem.solver.getIterationNumber()
@@ -291,9 +362,9 @@ def main():
     a_form = ufl.derivative(internal, u1, xi)  # tangente totale
     m_form = float(rho0_val) * ufl.inner(xi, eta) * ufl.dx
 
-    K = fem_petsc.assemble_matrix(fem.form(a_form), bcs=bcs)
+    K = fem_petsc.assemble_matrix(fem.form(a_form), bcs=bcs_modes)
     K.assemble()
-    M = fem_petsc.assemble_matrix(fem.form(m_form), bcs=bcs)
+    M = fem_petsc.assemble_matrix(fem.form(m_form), bcs=bcs_modes)
     M.assemble()
 
     # ------------------------------------------------------
@@ -370,8 +441,20 @@ def main():
         # 2) Modes seuls, ecrits comme serie temporelle (un mode par "temps")
         with io.VTKFile(domain.comm, str(vtk_modes_path), "w") as vtk:
             vtk.write_mesh(domain)
+            # Champ nul au temps 0 pour que ParaView voie immediatement un vecteur "mode"
+            mode_fun.x.array[:] = 0.0
+            mode_fun.x.scatter_forward()
+            mode_fun.name = "mode"
+            vtk.write_function(mode_fun, 0.0)
             for i, (lam, vec) in enumerate(eigpairs, start=1):
-                mode_fun.x.array[:] = vec
+                vec_out = vec.copy()
+                if NORMALIZE_MODES_FOR_VTK:
+                    vmax = float(np.max(np.abs(vec_out)))
+                    if vmax > 0.0:
+                        vec_out /= vmax
+                vec_out *= float(VTK_MODE_SCALE)
+
+                mode_fun.x.array[:] = vec_out
                 mode_fun.x.scatter_forward()
                 mode_fun.name = "mode"  # meme nom de champ, indexe par le temps
                 vtk.write_function(mode_fun, float(i))

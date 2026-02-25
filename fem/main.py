@@ -31,15 +31,15 @@ RHO0 = 1400.0        # kg/m^3
 # "traction" (cas d'etude)
 PRESTRESS_MODE = "imposed_radial_displacement"
 T0_TARGET = 1.0e6                    # Pa (si PRESTRESS_MODE == "traction")
-EDGE_RADIAL_DISPLACEMENT_TARGET = 2e-4  # m (si PRESTRESS_MODE == "imposed_radial_displacement")
-N_LOAD_STEPS = 10                    # continuation simple
+EDGE_RADIAL_DISPLACEMENT_TARGET = 2e-4  # coefficient sans dimension (u = a*[x,y,0] sur Gamma_lat)
+N_LOAD_STEPS = 20                    # continuation simple
 
 # Discretisation / solveurs
 FE_DEGREE = 2
 NEWTON_ATOL = 1e-8
 NEWTON_RTOL = 5e-4   # tolerance relative par pas de charge
 NEWTON_MAX_IT = 40
-N_MODES = 10
+N_MODES = 30
 EIG_TARGET = 0.0
 
 # Exports
@@ -47,7 +47,7 @@ WRITE_CSV = True
 WRITE_VTK = True
 RESULTS_BASENAME = None  # ex: "cercle_T1e6"; None => derive du nom de maillage
 NORMALIZE_MODES_FOR_VTK = True  # rend les modes visibles dans ParaView
-VTK_MODE_SCALE = 1.0            # facteur supplementaire (ex: 10.0)
+VTK_MODE_SCALE = 0.1           # facteur supplementaire (ex: 10.0)
 
 
 # ==========================================================
@@ -312,10 +312,14 @@ def main():
         print("mu =", mu, "Pa")
         print("kappa =", kappa, "Pa")
         print("T0_TARGET =", T0_TARGET, "Pa")
-        print("EDGE_RADIAL_DISPLACEMENT_TARGET =", EDGE_RADIAL_DISPLACEMENT_TARGET, "m")
+        print("EDGE_RADIAL_DISPLACEMENT_TARGET =", EDGE_RADIAL_DISPLACEMENT_TARGET, "(coef)")
         print("N_LOAD_STEPS =", N_LOAD_STEPS)
         print("Jauge minimale recommandee pour ne presque pas alterer la physique du tambour.")
         print("NORMALIZE_MODES_FOR_VTK =", NORMALIZE_MODES_FOR_VTK)
+
+    # Diagnostics de traction au bord (prechargement)
+    area_lat_form = fem.form(1.0 * ds(TAG_LATERAL))
+    traction_mean_form = fem.form(ufl.inner(P1 * N, N) * ds(TAG_LATERAL))
 
     if PRESTRESS_MODE == "traction":
         load_values = np.linspace(0.0, float(T0_TARGET), max(1, int(N_LOAD_STEPS)) + 1)[1:]
@@ -336,8 +340,17 @@ def main():
         reason = problem.solver.getConvergedReason()
         its = problem.solver.getIterationNumber()
         u1.x.scatter_forward()
+        area_lat_local = fem.assemble_scalar(area_lat_form)
+        traction_local = fem.assemble_scalar(traction_mean_form)
+        area_lat = domain.comm.allreduce(float(area_lat_local), op=MPI.SUM)
+        traction_int = domain.comm.allreduce(float(traction_local), op=MPI.SUM)
+        traction_mean = traction_int / area_lat if area_lat > 0 else float("nan")
+        umax_local = float(np.max(np.abs(u1.x.array))) if u1.x.array.size else 0.0
+        umax = domain.comm.allreduce(umax_local, op=MPI.MAX)
         if domain.comm.rank == 0:
             print(f"SNES iters = {its}, reason = {reason}")
+            print(f"  traction_nominale_moyenne_bord = {traction_mean:.6e} Pa")
+            print(f"  max|u|_ddl = {umax:.6e}")
         if reason <= 0:
             raise RuntimeError(f"SNES non convergent au load step {i_load}/{len(load_values)} (reason={reason}).")
 
@@ -345,9 +358,14 @@ def main():
 
     # ------------------------------------------------------
     # Vibrations lineaires autour de l'etat precontraint
+    # Modes transverses seulement: xi = w e_z
     # ------------------------------------------------------
-    xi = ufl.TrialFunction(V)
-    eta = ufl.TestFunction(V)
+    # Espace scalaire transverse (pris comme composante z du meme espace)
+    W, map_W_to_Vz = V.sub(2).collapse()
+    w = ufl.TrialFunction(W)
+    q = ufl.TestFunction(W)
+    xi_vec = ufl.as_vector((0.0, 0.0, w))
+    eta_vec = ufl.as_vector((0.0, 0.0, q))
 
     F_ref = I + ufl.grad(u1)
     F_ref_var = ufl.variable(F_ref)
@@ -358,13 +376,25 @@ def main():
     psi_ref = 0.5 * mu * (I1_bar_ref - 3.0) + 0.25 * kappa * (J_ref * J_ref - 1.0 - 2.0 * ufl.ln(J_ref))
     P_ref = ufl.diff(psi_ref, F_ref_var)
 
-    internal = ufl.inner(P_ref, ufl.grad(eta)) * ufl.dx
-    a_form = ufl.derivative(internal, u1, xi)  # tangente totale
-    m_form = float(rho0_val) * ufl.inner(xi, eta) * ufl.dx
+    internal = ufl.inner(P_ref, ufl.grad(eta_vec)) * ufl.dx
+    a_form = ufl.derivative(internal, u1, xi_vec)  # tangente totale restreinte au transverse
+    m_form = float(rho0_val) * w * q * ufl.dx
 
-    K = fem_petsc.assemble_matrix(fem.form(a_form), bcs=bcs_modes)
+    # Important pour les modes:
+    # - K avec Dirichlet forte -> diagonale sur ddl bloques (diag=1 par defaut)
+    # - M avec Dirichlet forte mais diag=0 -> pas de modes parasites sur le bord
+    # BC modales transverse: w = 0 sur Gamma_lat
+    dofs_lat_modes_W = fem.locate_dofs_topological(W, fdim, facets_lat)
+    w_zero = fem.Function(W)
+    w_zero.x.array[:] = 0.0
+    try:
+        bcs_modes_W = [fem.dirichletbc(w_zero, dofs_lat_modes_W)]
+    except TypeError:
+        bcs_modes_W = [fem.dirichletbc(w_zero, dofs_lat_modes_W, W)]
+
+    K = fem_petsc.assemble_matrix(fem.form(a_form), bcs=bcs_modes_W)
     K.assemble()
-    M = fem_petsc.assemble_matrix(fem.form(m_form), bcs=bcs_modes)
+    M = fem_petsc.assemble_matrix(fem.form(m_form), bcs=bcs_modes_W, diag=0.0)
     M.assemble()
 
     # ------------------------------------------------------
@@ -453,8 +483,9 @@ def main():
                     if vmax > 0.0:
                         vec_out /= vmax
                 vec_out *= float(VTK_MODE_SCALE)
-
-                mode_fun.x.array[:] = vec_out
+                # Injection du mode scalaire transverse dans la composante z du champ vectoriel
+                mode_fun.x.array[:] = 0.0
+                mode_fun.x.array[map_W_to_Vz] = vec_out
                 mode_fun.x.scatter_forward()
                 mode_fun.name = "mode"  # meme nom de champ, indexe par le temps
                 vtk.write_function(mode_fun, float(i))

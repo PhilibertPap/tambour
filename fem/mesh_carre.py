@@ -10,7 +10,7 @@ import gmsh
 # ==========================================================
 LX = 0.30
 LY = 0.30
-THICKNESS = 1e-4
+THICKNESS = 8e-5
 LC = 0.02
 OUT_FILE = "fem/mesh/carre.msh"
 

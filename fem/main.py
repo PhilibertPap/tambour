@@ -9,8 +9,9 @@ import numpy as np
 # PARAMETRES
 # ==========================================================
 
-# Maillage / tags (les scripts dans fem/mesh utilisent ces tags)
-MESH_FILE = "fem/mesh/ellipse.msh"
+# Maillage / tags
+# (les scripts de maillage sont dans fem/, les fichiers .msh dans fem/mesh/<cas>/)
+MESH_FILE = "fem/mesh/cercle/cercle.msh"
 TAG_LATERAL = 10   # Gamma_lat
 TAG_FIX_FACE = 12  # utilise seulement si GAUGE_MODE == "face"
 
@@ -30,16 +31,18 @@ RHO0 = 1400.0        # kg/m^3
 # "imposed_radial_displacement" (recommande pour un tambour serre)
 # "traction" (cas d'etude)
 PRESTRESS_MODE = "imposed_radial_displacement"
-T0_TARGET = 1.0e6                    # Pa (si PRESTRESS_MODE == "traction")
-EDGE_RADIAL_DISPLACEMENT_TARGET = 2e-4  # coefficient sans dimension (u = a*[x,y,0] sur Gamma_lat)
-N_LOAD_STEPS = 20                    # continuation simple
+T0_TARGET = 1.0e5                    # Pa (si PRESTRESS_MODE == "traction")
+# Reglage "3D solide compromis": precontrainte tres faible pour faire descendre les frequences
+# (sur un vrai tambour, on calibre plutot sur une frequence cible que sur un deplacement radial connu)
+EDGE_RADIAL_DISPLACEMENT_TARGET = 2e-3  # coefficient sans dimension (u = a*[x,y,0] sur Gamma_lat)
+N_LOAD_STEPS = 80                    # continuation plus douce
 
 # Discretisation / solveurs
 FE_DEGREE = 2
 NEWTON_ATOL = 1e-8
 NEWTON_RTOL = 5e-4   # tolerance relative par pas de charge
 NEWTON_MAX_IT = 40
-N_MODES = 30
+N_MODES = 60
 EIG_TARGET = 0.0
 
 # Exports
@@ -47,8 +50,8 @@ WRITE_CSV = True
 WRITE_VTK = True
 WRITE_MODAL_NPZ = True
 RESULTS_BASENAME = None  # ex: "cercle_T1e6"; None => derive du nom de maillage
-NORMALIZE_MODES_FOR_VTK = True  # rend les modes visibles dans ParaView
-VTK_MODE_SCALE = 0.1           # facteur supplementaire (ex: 10.0)
+NORMALIZE_MODES_FOR_VTK = True  # affichage seulement (n'affecte pas les frequences)
+VTK_MODE_SCALE = 0.02           # facteur visuel pour ParaView
 
 
 # ==========================================================

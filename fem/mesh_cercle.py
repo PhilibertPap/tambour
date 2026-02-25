@@ -8,10 +8,12 @@ import gmsh
 # ==========================================================
 # PARAMETRES (modifier ici puis executer)
 # ==========================================================
-RADIUS = 0.15
-THICKNESS = 1e-4
+# Exemple "caisse claire" courant: 14" de diametre -> R = 0.1778 m
+RADIUS = 0.1778
+# Peau batter simple pli ~10 mil ~= 0.254 mm (ordre de grandeur realiste)
+THICKNESS = 2.54e-4
 LC = 0.015
-OUT_FILE = "fem/mesh/cercle.msh"
+OUT_FILE = "fem/mesh/cercle/cercle.msh"
 
 # Tags physiques (utilises par fem/main.py)
 VOLUME_TAG = 1

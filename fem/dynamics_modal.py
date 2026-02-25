@@ -11,7 +11,7 @@ import numpy as np
 # ==========================================================
 
 # Donnees modales exportees par fem/main.py
-MODAL_DATA_FILE = "fem/results/cercle/cercle_modal_data.npz"
+MODAL_DATA_FILE = "fem/results/ellipse/ellipse_modal_data.npz"
 
 # Frappe (position dans le plan)
 X_HIT = 0.03   # m
@@ -38,13 +38,32 @@ T_END = 2.0               # s
 # Exports
 WRITE_SIGNAL_CSV = True
 WRITE_WAV = True
-WRITE_VTK_ANIMATION = False    # mettre True si tu veux des snapshots ParaView
+WRITE_VTK_ANIMATION = True    # mettre True si tu veux des snapshots ParaView
 N_VTK_SNAPSHOTS = 80
 VTK_ANIMATION_SCALE = 1.0e-3   # m (amplitude visuelle des snapshots)
 
 
 def main():
-    data = np.load(MODAL_DATA_FILE, allow_pickle=True)
+    modal_path = Path(MODAL_DATA_FILE)
+    if not modal_path.exists():
+        # Petit confort "TD": on cherche automatiquement un fichier *_modal_data.npz
+        candidates = sorted(Path("fem/results").glob("*/*_modal_data.npz"))
+        if len(candidates) == 1:
+            modal_path = candidates[0]
+            print("MODAL_DATA_FILE introuvable, fichier detecte automatiquement :", modal_path)
+        else:
+            print("Fichier modal introuvable :", MODAL_DATA_FILE)
+            if candidates:
+                print("Fichiers *_modal_data.npz disponibles :")
+                for p in candidates:
+                    print("  -", p)
+                print("Modifie MODAL_DATA_FILE en haut du script.")
+            else:
+                print("Aucun fichier *_modal_data.npz trouve.")
+                print("Relance d'abord : python fem/main.py")
+            return
+
+    data = np.load(modal_path, allow_pickle=True)
 
     omegas = np.asarray(data["omegas"], dtype=float)                  # (Nm,)
     freqs_hz = np.asarray(data["freqs_hz"], dtype=float)              # (Nm,)
@@ -163,7 +182,6 @@ def main():
     else:
         signal_norm = signal.copy()
 
-    modal_path = Path(MODAL_DATA_FILE)
     case_dir = modal_path.parent
     stem = modal_path.stem.replace("_modal_data", "")
     csv_signal_path = case_dir / f"{stem}_hit_signal.csv"

@@ -11,7 +11,7 @@ import gmsh
 RADIUS = 0.15
 THICKNESS = 1e-4
 LC = 0.015
-OUT_FILE = "fem/mesh/cercle/cercle.msh"
+OUT_FILE = "fem/mesh/cercle.msh"
 
 # Tags physiques (utilises par fem/main.py)
 VOLUME_TAG = 1

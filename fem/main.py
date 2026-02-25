@@ -10,7 +10,7 @@ import numpy as np
 # ==========================================================
 
 # Maillage / tags (les scripts dans fem/mesh utilisent ces tags)
-MESH_FILE = "fem/mesh/cercle/cercle.msh"
+MESH_FILE = "fem/mesh/ellipse.msh"
 TAG_LATERAL = 10   # Gamma_lat
 TAG_FIX_FACE = 12  # utilise seulement si GAUGE_MODE == "face"
 
@@ -45,6 +45,7 @@ EIG_TARGET = 0.0
 # Exports
 WRITE_CSV = True
 WRITE_VTK = True
+WRITE_MODAL_NPZ = True
 RESULTS_BASENAME = None  # ex: "cercle_T1e6"; None => derive du nom de maillage
 NORMALIZE_MODES_FOR_VTK = True  # rend les modes visibles dans ParaView
 VTK_MODE_SCALE = 0.1           # facteur supplementaire (ex: 10.0)
@@ -442,8 +443,55 @@ def main():
     results_dir.mkdir(parents=True, exist_ok=True)
     stem = RESULTS_BASENAME if RESULTS_BASENAME else mesh_path.stem
     csv_path = results_dir / f"{stem}_modes.csv"
+    modal_npz_path = results_dir / f"{stem}_modal_data.npz"
     vtk_prestress_path = results_dir / f"{stem}_prestress.pvd"
     vtk_modes_path = results_dir / f"{stem}_modes.pvd"
+
+    # Export modal compact pour la dynamique modale (impact / son)
+    if WRITE_MODAL_NPZ and eigpairs:
+        # Normalisation modale de masse: phi^T M phi = 1
+        _, v_template = K.createVecs()
+        mode_vectors_mass_norm = []
+        modal_masses = []
+        for lam, vec in eigpairs:
+            phi = v_template.duplicate()
+            phi.set(0.0)
+            phi_arr = phi.getArray()
+            phi_arr[:] = vec
+            Mphi = v_template.duplicate()
+            M.mult(phi, Mphi)
+            m_modal = float(phi.dot(Mphi))
+            modal_masses.append(m_modal)
+            if m_modal > 0.0:
+                mode_vectors_mass_norm.append(vec / np.sqrt(m_modal))
+            else:
+                mode_vectors_mass_norm.append(vec.copy())
+            phi.destroy()
+            Mphi.destroy()
+
+        mode_vectors_mass_norm = np.asarray(mode_vectors_mass_norm, dtype=float)
+        omegas = np.asarray([np.sqrt(lam) for lam, _ in eigpairs], dtype=float)
+        freqs_hz = omegas / (2.0 * np.pi)
+        try:
+            dof_coords_W = np.asarray(W.tabulate_dof_coordinates(), dtype=float)
+        except Exception:
+            dof_coords_W = np.zeros((mode_vectors_mass_norm.shape[1], 3), dtype=float)
+
+        if domain.comm.rank == 0:
+            np.savez(
+                modal_npz_path,
+                mesh_file=np.array([str(MESH_FILE)]),
+                fe_degree=np.array([int(FE_DEGREE)]),
+                case_name=np.array([str(case_name)]),
+                omegas=omegas,
+                freqs_hz=freqs_hz,
+                lambda_eigs=np.asarray([lam for lam, _ in eigpairs], dtype=float),
+                mode_vectors_W=mode_vectors_mass_norm,
+                modal_masses_raw=np.asarray(modal_masses, dtype=float),
+                dof_coords_W=dof_coords_W,
+                map_W_to_Vz=np.asarray(map_W_to_Vz, dtype=np.int64),
+            )
+            print("Modal NPZ exporte:", modal_npz_path)
 
     if WRITE_CSV:
         with csv_path.open("w", newline="") as f:

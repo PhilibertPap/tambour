@@ -81,7 +81,7 @@ def mu_K_from_E_nu(E: float, nu: float) -> Tuple[float, float]:
         raise ValueError("nu doit etre dans (-1, 0.5) pour un modele isotrope stable.")
 
     mu = E / (2.0 * (1.0 + nu))
-    K = E / (3.0 * (1.0 - 2.0 * nu))
+    K = 2 * E / (3.0 * (1.0 - 2.0 * nu))
     return mu, K
 
 
@@ -115,4 +115,6 @@ def drum_material_preset(name: str) -> Tuple[float, float]:
         return 3.5e9, 0.38
     if key == "steel_304":
         return 193e9, 0.29
+    if key == "peau" :
+        return 4.0e8, 0.3
     raise ValueError("Preset inconnu. Choix: mylar_92, steel_304.")

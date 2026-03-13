@@ -22,7 +22,7 @@ GAUGE_MODE = "minimal"  # "minimal" ou "face"
 
 # Materiau (choisir preset OU imposer E, nu, rho0)
 USE_PRESET = True
-PRESET = "mylar_92"  # "mylar_92" ou "steel_304"
+PRESET = "peau"  # "mylar_92" ou "steel_304" ou "peau"
 E = 3.5e9            # Pa (ignore si USE_PRESET=True)
 NU = 0.38            # -
 RHO0 = 1400.0        # kg/m^3
@@ -65,7 +65,9 @@ def material_preset(name: str):
         return 3.5e9, 0.38, 1400.0
     if key == "steel_304":
         return 193e9, 0.29, 7900.0
-    raise ValueError("Preset inconnu. Choix: mylar_92, steel_304.")
+    if key == "peau" :
+        return 4.0e8, 0.3, 1200.0
+    raise ValueError("Preset inconnu. Choix: mylar_92, steel_304, peau.")
 
 
 def mu_kappa_from_E_nu(E: float, nu: float):

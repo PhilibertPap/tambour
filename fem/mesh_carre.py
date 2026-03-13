@@ -8,8 +8,8 @@ import gmsh
 # ==========================================================
 # PARAMETRES (modifier ici puis executer)
 # ==========================================================
-LX = 0.30
-LY = 0.30
+LX = 0.3
+LY = 0.5
 THICKNESS = 8e-5
 LC = 0.02
 OUT_FILE = "fem/mesh/carre.msh"

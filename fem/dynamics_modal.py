@@ -20,17 +20,17 @@ MAX_FREQ_HZ = 2.0e4
 MAX_MODES_USED = 80   # plus de modes => son plus riche (si disponibles)
 
 # Frappe (position dans le plan)
-X_HIT = 0.04   # m (ni trop centre, ni trop bord)
+X_HIT = 0.07   # m (ni trop centre, ni trop bord)
 Y_HIT = 0.0   # m
 HIT_RADIUS = 0.002  # m (plus local => excite plus de modes)
 
 # Force temporelle (impulsion gaussienne)
 FORCE_AMPLITUDE = 1.0      # amplitude arbitraire (affecte amplitude, pas frequences)
 T_HIT = 0.02               # s
-TAU_HIT = 0.00035          # s (frappe plus courte => plus de hautes frequences)
+TAU_HIT = 0.0005          # s (frappe plus courte => plus de hautes frequences)
 
 # Amortissement modal
-DAMPING_RATIO = 0.005       # amortissement modal constant (compromis)
+DAMPING_RATIO = 0.0005       # amortissement modal constant (compromis)
 
 # Point "micro" pour le signal audio
 X_MIC = 0.02
@@ -44,7 +44,7 @@ AUDIO_NORMALIZE_AFTER = 0.023    # s (normalise sur la queue vibratoire)
 
 # Temps
 FS_AUDIO = 44100           # Hz
-T_END = 2.0               # s
+T_END = 1.0               # s
 
 # Exports
 WRITE_SIGNAL_CSV = True

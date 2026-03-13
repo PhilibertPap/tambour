@@ -8,8 +8,8 @@ import gmsh
 # ==========================================================
 # PARAMETRES (modifier ici puis executer)
 # ==========================================================
-RX = 0.18
-RY = 0.12
+RX = 0.5
+RY = 0.1
 THICKNESS = 8e-5
 LC = 0.015
 OUT_FILE = "fem/mesh/ellipse.msh"

@@ -20,7 +20,7 @@ MAX_FREQ_HZ = 2.0e4
 MAX_MODES_USED = 80   # plus de modes => son plus riche (si disponibles)
 
 # Frappe (position dans le plan)
-X_HIT = 0.07   # m (ni trop centre, ni trop bord)
+X_HIT = 0.1   # m 
 Y_HIT = 0.0   # m
 HIT_RADIUS = 0.002  # m (plus local => excite plus de modes)
 

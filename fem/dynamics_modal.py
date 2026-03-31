@@ -14,15 +14,15 @@ import numpy as np
 MODAL_DATA_FILE = "fem/results/cercle/cercle_modal_data.npz"
 
 # Selection de modes (utile si le 1er mode parait parasite / bizarre)
-SKIP_FIRST_MODE = True
+SKIP_FIRST_MODE = False
 MIN_FREQ_HZ = 30.0
-MAX_FREQ_HZ = 2.0e4
+MAX_FREQ_HZ = 2.5e3
 MAX_MODES_USED = 80   # plus de modes => son plus riche (si disponibles)
 
 # Frappe (position dans le plan)
-X_HIT = 0.1   # m 
-Y_HIT = 0.0   # m
-HIT_RADIUS = 0.002  # m (plus local => excite plus de modes)
+X_HIT = 0.03   # m
+Y_HIT = 0.0    # m
+HIT_RADIUS = 0.012  # m (plus large => moins de hautes frequences visibles)
 
 # Force temporelle (impulsion gaussienne)
 FORCE_AMPLITUDE = 1.0      # amplitude arbitraire (affecte amplitude, pas frequences)
@@ -30,7 +30,7 @@ T_HIT = 0.02               # s
 TAU_HIT = 0.0005          # s (frappe plus courte => plus de hautes frequences)
 
 # Amortissement modal
-DAMPING_RATIO = 0.0005       # amortissement modal constant (compromis)
+DAMPING_RATIO = 0.002        # amortissement modal constant (plus lisible visuellement)
 
 # Point "micro" pour le signal audio
 X_MIC = 0.02
@@ -50,11 +50,21 @@ T_END = 1.0               # s
 WRITE_SIGNAL_CSV = True
 WRITE_WAV = True
 WRITE_VTK_ANIMATION = True    # mettre False si tu veux juste le son
-N_VTK_SNAPSHOTS = 80
-VTK_ANIMATION_SCALE = 1.0e-3   # m (amplitude visuelle des snapshots)
-VTK_T_START = None             # None => commence a T_HIT (pas de "temps morts" avant l'impact)
-VTK_T_END = 0.06               # s (fenetre exportee)
-VTK_DENSE_AT_END = True        # snapshots plus serres plus tard (ring), pas au tout debut
+
+# Export 1: impact complet, utile pour montrer le coup initial.
+N_VTK_SNAPSHOTS_IMPACT = 90
+VTK_IMPACT_SCALE = 1.0e-3
+VTK_IMPACT_T_START = 0.018
+VTK_IMPACT_T_END = 0.028
+VTK_IMPACT_VISUAL_REF_START = 0.018
+
+# Export 2: vibration apres impact, utile pour le rapport/PPT.
+N_VTK_SNAPSHOTS_RING = 120
+VTK_RING_SCALE = 1.8e-3
+VTK_RING_T_START = 0.0215
+VTK_RING_T_END = 0.050
+VTK_RING_VISUAL_REF_START = 0.023
+VTK_DENSE_AT_END = False       # echantillonnage uniforme pour mieux lire la dynamique
 
 
 def main():
@@ -189,22 +199,10 @@ def main():
     v_mic = np.zeros(Nt, dtype=float)
     a_mic = np.zeros(Nt, dtype=float)
 
-    # Snapshots VTK (optionnel)
-    snapshot_ids = None
-    q_snapshots = None
+    # Historique modal complet pour les exports VTK.
+    q_history = None
     if WRITE_VTK_ANIMATION:
-        t_snap_start = float(T_HIT) if VTK_T_START is None else float(VTK_T_START)
-        t_snap_start = max(0.0, min(t_snap_start, float(T_END)))
-        t_snap_end = max(t_snap_start, min(float(VTK_T_END), float(T_END)))
-        if VTK_DENSE_AT_END:
-            # plus grossier juste apres l'impact, plus fin ensuite
-            s = np.linspace(0.0, 1.0, int(N_VTK_SNAPSHOTS))
-            t_snap = t_snap_start + np.sqrt(s) * (t_snap_end - t_snap_start)
-        else:
-            t_snap = np.linspace(t_snap_start, t_snap_end, int(N_VTK_SNAPSHOTS))
-        snapshot_ids = np.unique(np.clip(np.round(t_snap / dt).astype(int), 0, Nt - 1))
-        q_snapshots = np.zeros((len(snapshot_ids), Nm), dtype=float)
-        k_snap = 0
+        q_history = np.zeros((Nt, Nm), dtype=float)
 
     def force_time(tt):
         return FORCE_AMPLITUDE * np.exp(-0.5 * ((tt - T_HIT) / TAU_HIT) ** 2)
@@ -219,10 +217,8 @@ def main():
         v_mic[k] = float(np.dot(qd, phi_mic))
         a_mic[k] = float(np.dot(qdd_now, phi_mic))
 
-        if WRITE_VTK_ANIMATION and snapshot_ids is not None and q_snapshots is not None:
-            if k_snap < len(snapshot_ids) and k == snapshot_ids[k_snap]:
-                q_snapshots[k_snap, :] = q
-                k_snap += 1
+        if WRITE_VTK_ANIMATION and q_history is not None:
+            q_history[k, :] = q
 
         # RK4 explicite (style TD)
         f1 = g_modal * force_time(tk)
@@ -290,7 +286,8 @@ def main():
     stem = modal_path.stem.replace("_modal_data", "")
     csv_signal_path = case_dir / f"{stem}_hit_signal.csv"
     wav_path = case_dir / f"{stem}_hit.wav"
-    vtk_anim_path = case_dir / f"{stem}_hit_response.pvd"
+    vtk_impact_path = case_dir / f"{stem}_hit_impact.pvd"
+    vtk_ring_path = case_dir / f"{stem}_hit_ring.pvd"
 
     if WRITE_SIGNAL_CSV:
         with csv_signal_path.open("w") as f:
@@ -311,7 +308,7 @@ def main():
     # ------------------------------------------------------
     # Snapshots VTK (optionnel) pour ParaView
     # ------------------------------------------------------
-    if WRITE_VTK_ANIMATION and snapshot_ids is not None and q_snapshots is not None:
+    if WRITE_VTK_ANIMATION:
         from mpi4py import MPI  # type: ignore
         from dolfinx import fem, io  # type: ignore
         import ufl  # type: ignore
@@ -336,20 +333,69 @@ def main():
             raise RuntimeError("Le nombre de ddl de W a change; impossible de reconstruire les snapshots VTK.")
 
         u_dyn = fem.Function(V, name="u_dyn")
-        with io.VTKFile(domain.comm, str(vtk_anim_path), "w") as vtk:
-            vtk.write_mesh(domain)
-            for i_snap, idx in enumerate(snapshot_ids):
-                w_field = q_snapshots[i_snap, :] @ Phi  # (Nw,)
-                # amplitude visuelle
-                vmax = float(np.max(np.abs(w_field)))
-                if vmax > 0:
-                    w_field = (VTK_ANIMATION_SCALE / vmax) * w_field
 
+        def export_vtk_window(path, t_start, t_end, n_snapshots, visual_ref_start, visual_scale):
+            t0 = max(0.0, min(float(t_start), float(T_END)))
+            t1 = max(t0, min(float(t_end), float(T_END)))
+            if VTK_DENSE_AT_END:
+                s = np.linspace(0.0, 1.0, int(n_snapshots))
+                t_snap = t0 + np.sqrt(s) * (t1 - t0)
+            else:
+                t_snap = np.linspace(t0, t1, int(n_snapshots))
+            ids = np.unique(np.clip(np.round(t_snap / dt).astype(int), 0, Nt - 1))
+            if len(ids) > 1:
+                ids = ids[1:]
+
+            snapshot_fields = []
+            global_vmax = 0.0
+            for idx in ids:
+                w_field = q_history[idx, :] @ Phi
+                snapshot_fields.append(w_field)
+                if t[idx] >= float(visual_ref_start):
+                    vmax = float(np.max(np.abs(w_field))) if w_field.size else 0.0
+                    global_vmax = max(global_vmax, vmax)
+
+            if global_vmax <= 0.0:
+                for w_field in snapshot_fields:
+                    vmax = float(np.max(np.abs(w_field))) if w_field.size else 0.0
+                    global_vmax = max(global_vmax, vmax)
+
+            with io.VTKFile(domain.comm, str(path), "w") as vtk:
+                vtk.write_mesh(domain)
                 u_dyn.x.array[:] = 0.0
-                u_dyn.x.array[np.asarray(map_W_to_Vz_now, dtype=np.int64)] = w_field
                 u_dyn.x.scatter_forward()
-                vtk.write_function(u_dyn, float(t[idx]))
-        print("VTK animation exporte:", vtk_anim_path)
+                vtk.write_function(u_dyn, 0.0)
+                for i_snap, idx in enumerate(ids):
+                    w_field = snapshot_fields[i_snap].copy()
+                    if global_vmax > 0:
+                        w_field = (float(visual_scale) / global_vmax) * w_field
+
+                    u_dyn.x.array[:] = 0.0
+                    u_dyn.x.array[np.asarray(map_W_to_Vz_now, dtype=np.int64)] = w_field
+                    u_dyn.x.scatter_forward()
+                    vtk.write_function(u_dyn, float(t[idx]))
+
+        if q_history is None:
+            raise RuntimeError("Historique temporel indisponible pour l'export VTK.")
+
+        export_vtk_window(
+            vtk_impact_path,
+            VTK_IMPACT_T_START,
+            VTK_IMPACT_T_END,
+            N_VTK_SNAPSHOTS_IMPACT,
+            VTK_IMPACT_VISUAL_REF_START,
+            VTK_IMPACT_SCALE,
+        )
+        export_vtk_window(
+            vtk_ring_path,
+            VTK_RING_T_START,
+            VTK_RING_T_END,
+            N_VTK_SNAPSHOTS_RING,
+            VTK_RING_VISUAL_REF_START,
+            VTK_RING_SCALE,
+        )
+        print("VTK impact exporte:", vtk_impact_path)
+        print("VTK ring exporte:", vtk_ring_path)
 
 
 if __name__ == "__main__":
